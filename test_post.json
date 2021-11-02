@@ -1,0 +1,11 @@
+{
+"driver":"mariadb",
+"connection": {
+        "host": "192.168.120.104",
+        "user": "admin",
+	"database": "beaker",
+	"password":"admin"
+},
+"sql": "SELECT count(fqdn) as cnt from system"
+
+}

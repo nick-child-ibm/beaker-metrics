@@ -1,0 +1,202 @@
+- machines_total:
+    sql: >
+        select count(fqdn) as cnt from system WHERE system.status != 'Removed';
+    data-field: cnt
+- machines_available:
+    sql: >
+        select count(fqdn) as cnt from system where scheduler_status='Idle' AND system.status != 'Removed';
+    data-field: cnt
+
+- machines_reserved:
+    sql: >
+        select count(fqdn) as cnt from system where scheduler_status='Reserved' AND system.status != 'Removed';
+    data-field: cnt
+
+- machines_broken:
+    sql: >
+        select count(fqdn) as cnt from system where status = 'Broken';
+    data-field: cnt
+
+- machine_recipes_per_day:
+    sql: >
+        SELECT     system.fqdn AS fqdn,     
+                (SELECT TIMESTAMPDIFF(DAY, system.date_added, UTC_TIMESTAMP())    
+                        FROM system s1     
+                        WHERE s1.id = system.id
+                ) AS age_days,     
+                (SELECT COUNT(system_resource.id)     
+                        FROM system_resource
+                        WHERE system_resource.system_id = system.id
+                ) AS recipe_count, 
+                ((SELECT COUNT(system_resource.id)     
+                        FROM system_resource     
+                        WHERE system_resource.system_id = system.id
+                )/
+                (SELECT TIMESTAMPDIFF(DAY, system.date_added, UTC_TIMESTAMP())
+                        FROM system s1
+                        WHERE s1.id = system.id)
+                ) as util FROM system 
+                WHERE system.status != 'Removed' ORDER BY age_days DESC;
+    data-field: util
+
+- users_per_group:
+    sql: >
+        select display_name, count(*) as cnt
+                from user_group inner join tg_group on user_group.group_id=tg_group.group_id 
+                group by tg_group.group_id;
+    data-field: cnt
+
+- users_total:
+    sql: >
+        select count(user_id) as cnt from tg_user;
+    data-field: cnt
+
+- recipes_running_status:
+    sql: >
+        select status, count(*) as cnt 
+        from recipe as r 
+        where r.finish_time is NULL 
+                and r.status != 'Aborted' 
+                and r.status != 'Cancelled'
+                and r.status != 'Aborted'
+                and r.status != 'Completed' 
+        group by status;
+    data-field: cnt 
+
+- queue_avg:
+    sql: >
+        select AVG(TIMESTAMPDIFF(SECOND, queue_time, start_time)) as avg, fqdn 
+        from recipe 
+                inner join recipe_set on recipe.recipe_set_id = recipe_set.id 
+                inner join recipe_resource on recipe_resource.recipe_id = recipe.id 
+        where start_time IS NOT NULL 
+        group by fqdn;
+    data-field: avg
+- queue_min:
+    sql: >
+        select MIN(TIMESTAMPDIFF(SECOND, queue_time, start_time)) as min, fqdn
+        from recipe 
+        inner join recipe_set on recipe.recipe_set_id = recipe_set.id
+        inner join recipe_resource on recipe_resource.recipe_id = recipe.id
+        where start_time IS NOT NULL 
+        group by fqdn;
+    data-field: min
+
+- queue_max:
+    sql: >
+        select MAX(TIMESTAMPDIFF(SECOND, queue_time, start_time)) as max, fqdn
+        from recipe 
+        inner join recipe_set on recipe.recipe_set_id = recipe_set.id            
+        inner join recipe_resource on recipe_resource.recipe_id = recipe.id                where start_time IS NOT NULL  
+        group by fqdn;
+    data-field: max
+- queue_diff:
+    sql: >
+        select queue_time, start_time, 
+                TIMESTAMPDIFF(SECOND, queue_time, start_time) as diff, 
+                fqdn
+        from recipe
+                inner join recipe_set on recipe.recipe_set_id = recipe_set.id
+                inner join recipe_resource on recipe_resource.recipe_id = recipe.id 
+        where start_time IS NOT NULL;
+    data-field: diff
+
+# users per arch total machine hours
+- hours_arch_per_user:
+    sql: >
+        SELECT tg_user.user_name AS username,     
+               system_arch.arch AS arch,
+           SUM(TIMESTAMPDIFF(SECOND, 
+                r.start_time,  r.finish_time)) / 60 / 60 AS hours 
+           FROM reservation as r 
+           INNER JOIN system ON r.system_id = system.id 
+           INNER JOIN tg_user ON r.user_id = tg_user.user_id 
+           INNER JOIN     
+                (SELECT system.id, MAX(arch.arch) arch     
+                FROM system     
+                LEFT OUTER JOIN system_arch_map 
+                    ON system_arch_map.system_id = system.id     
+                LEFT OUTER JOIN arch 
+                    ON system_arch_map.arch_id = arch.id     
+                GROUP BY system.id) 
+                system_arch
+                ON system_arch.id = system.id
+            GROUP BY tg_user.user_name, system_arch.arch;
+    data-field: hours
+# joins (users w group names) + (users per arch total machine hours)
+# returns the total number of hours on an arch per group
+# some users can be in more than 1 group, in this case, the group w the
+# longest name is used
+- hours_arch_per_group:
+    sql: >
+        select
+        group_name, arch, SUM(machine_hours) as hours
+        from 
+        (select  
+        tg_user.user_id, user_name,  
+        case when groups.group_name is NULL then "no_group" 
+            else group_name end  as group_name
+        from tg_user  
+        left join (
+             select max(tg_group.group_name) as group_name, user_id     
+             from user_group     
+                left join  tg_group     
+                on user_group.group_id = tg_group.group_id
+                group by user_id     
+            ) groups      
+        on groups.user_id = tg_user.user_id
+        ) id_to_group
+        inner join (
+        SELECT  
+           tg_user.user_id, tg_user.user_name AS username,
+           system_arch.arch AS arch,
+           SUM(TIMESTAMPDIFF(SECOND, 
+                r.start_time,  r.finish_time)) / 60 / 60 AS machine_hours 
+           FROM reservation as r 
+           INNER JOIN system ON r.system_id = system.id 
+           INNER JOIN tg_user ON r.user_id = tg_user.user_id 
+           INNER JOIN     
+                (SELECT system.id, MAX(arch.arch) arch     
+                FROM system     
+                LEFT OUTER JOIN system_arch_map 
+                    ON system_arch_map.system_id = system.id     
+                LEFT OUTER JOIN arch 
+                    ON system_arch_map.arch_id = arch.id     
+                GROUP BY system.id) 
+                system_arch
+                ON system_arch.id = system.id
+            GROUP BY tg_user.user_name, system_arch.arch
+        ) id_to_arch_hours
+        on id_to_arch_hours.user_id = id_to_group.user_id
+        group by id_to_group.group_name, id_to_arch_hours.arch;
+    data-field: hours
+
+- total_machines_per_arch:
+    sql: >
+        select arch, count(id) as cnt
+        from (
+                SELECT system.id, MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map
+                    ON system_arch_map.system_id = system.id 
+                LEFT OUTER JOIN arch
+                    ON system_arch_map.arch_id = arch.id
+                GROUP BY system.id
+             ) system_arch
+        group by arch;
+    data-field: cnt
+
+- total_machines_broken_per_arch:
+    sql: >    
+        select arch,  count( case  sys.status when 'Broken' then 1 else NULL end)  as cnt
+        from ( 
+                SELECT system.id, system.status,MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map 
+                ON system_arch_map.system_id = system.id
+                LEFT OUTER JOIN arch  
+                ON system_arch_map.arch_id = arch.id
+                GROUP BY system.id
+        ) sys 
+        group by sys.arch;
+    data-field: cnt

@@ -1,0 +1,13 @@
+[Unit]
+Description=Open endpoints from SQL to prometheus communication
+
+[Service]
+User=prometheus
+Group=prometheus
+WorkingDirectory=/home/prometheus-sql/linux-amd64
+ExecStart=/home/prometheus-sql/linux-amd64/prometheus-sql -config /home/prometheus-sql/linux-amd64/config.yml -queries /home/prometheus-sql/linux-amd64/queries.yml -service http://localhost:5000
+KillMode=process
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
