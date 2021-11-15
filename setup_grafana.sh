@@ -204,4 +204,9 @@ cd ..
 # ensure prometheus-sql is running properly
 ! systemctl status prometheus-sql.service | grep "active (running)" && error_exit $LINENO
 ! wget http://${BEAKER_SERVER_IP}:8080/metrics -O /dev/null && error_exit $LINENO
+
+# USER TODO
+# copy the contents of grafana_dashboard.json
+# go to the grafana webpage -> + (Create)-> import -> paste json
+# may need to update datasource to prometheus (port 9090)
 echo Success
