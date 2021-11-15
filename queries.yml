@@ -28,14 +28,18 @@
                         FROM system_resource
                         WHERE system_resource.system_id = system.id
                 ) AS recipe_count, 
-                ((SELECT COUNT(system_resource.id)     
-                        FROM system_resource     
-                        WHERE system_resource.system_id = system.id
-                )/
-                (SELECT TIMESTAMPDIFF(DAY, system.date_added, UTC_TIMESTAMP())
-                        FROM system s1
-                        WHERE s1.id = system.id)
-                ) as util FROM system 
+                IFNULL(
+                        ((SELECT COUNT(system_resource.id)     
+                                FROM system_resource     
+                                WHERE system_resource.system_id = system.id
+                        )/
+                        (SELECT TIMESTAMPDIFF(DAY, system.date_added, 
+                                                UTC_TIMESTAMP())
+                                FROM system s1
+                                WHERE s1.id = system.id)
+                        ) 
+                , 0)
+                as util FROM system 
                 WHERE system.status != 'Removed' ORDER BY age_days DESC;
     data-field: util
 
@@ -200,3 +204,149 @@
         ) sys 
         group by sys.arch;
     data-field: cnt
+
+# get average number of recipes per arch by adding machine_recipes_per_day
+# and arch info
+# if no info on an arch, return 0
+- arch_recipes_per_day:
+    sql: >
+        select arch,  IFNULL(AVG(util),0) as recip_per_day
+        from (
+                select system.id, 
+                (
+                        (SELECT COUNT(system_resource.id)
+                        FROM system_resource
+                        WHERE system_resource.system_id = system.id
+                        )/
+                        (SELECT TIMESTAMPDIFF(DAY, 
+                                              system.date_added, 
+                                              UTC_TIMESTAMP())
+                        FROM system s1
+                        WHERE s1.id = system.id
+                        )
+                )
+                AS util
+                FROM system
+                WHERE system.status != 'Removed'
+        ) usage_per_machine
+        LEFT JOIN (
+                SELECT system.id, MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map
+                ON system_arch_map.system_id = system.id
+                LEFT OUTER JOIN arch
+                ON system_arch_map.arch_id = arch.id
+                where system.status != "Removed"
+                GROUP BY system.id
+        ) system_arch
+        ON system_arch.id = usage_per_machine.id
+        GROUP BY system_arch.arch;
+    data-field: recip_per_day
+
+# returns average number of seconds a recipe is queued per architecture
+# does this by adding machine architecture with machine start and end times
+- arch_avg_queue_time:
+    sql: >
+        select arch, IFNULL(
+                       AVG(TIMESTAMPDIFF(SECOND, queue_time, start_time))
+                     , 0) as avg
+        from (
+                SELECT system.fqdn, MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map
+                ON system_arch_map.system_id = system.id
+                LEFT OUTER JOIN arch
+                ON system_arch_map.arch_id = arch.id
+                where system.status != "Removed"
+                GROUP BY system.id
+        ) system_arch
+        LEFT JOIN (
+                select start_time, queue_time, fqdn
+                from recipe_resource
+                left join recipe on recipe.id = recipe_resource.recipe_id
+                left join recipe_set on recipe.recipe_set_id = recipe_set.id
+                where start_time is not null
+        ) recipes
+        on system_arch.fqdn = recipes.fqdn
+        group by arch;
+    data-field: avg
+- arch_machines_available:
+    sql: > 
+        select arch, count(*) as cnt
+        from (
+                SELECT system.id as system_id, MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map
+                ON system_arch_map.system_id = system.id
+                LEFT OUTER JOIN arch
+                ON system_arch_map.arch_id = arch.id
+                where system.status != "Removed"
+                GROUP BY system.id
+        ) system_arch
+        inner join system 
+        on system.id = system_arch.system_id 
+        and system.status != 'Broken'
+        where scheduler_status = 'Idle'
+        group by arch;
+    data-field: cnt
+- arch_machines_available_:
+    sql: > 
+        select arch, 
+        count(case scheduler_status when 'Idle' then 1 else NULL end) as avail,         count(case scheduler_status when 'Reserved' then 1 else NULL end) 
+                as reserved, 
+        count(case scheduler_status when 'Pending' then 1 else NULL end) 
+        as pending
+        from (
+                SELECT system.id as system_id, MAX(arch.arch) arch
+                FROM system
+                LEFT OUTER JOIN system_arch_map
+                ON system_arch_map.system_id = system.id
+                LEFT OUTER JOIN arch
+                ON system_arch_map.arch_id = arch.id
+                where system.status != "Removed"
+                GROUP BY system.id
+        ) system_arch
+        inner join system 
+        on system.id = system_arch.system_id 
+        and system.status != 'Broken'
+        group by arch;
+    sub-metrics:
+        avail: avail
+        reserv: reserved
+        pend: pending
+
+# goal here is to get boolean table of arches and distros, 
+# 1 means the distro on that arch is available, 0 if not.
+# to do this we get all combinations of available architectures and 
+# known distros, then query to get names from the arch/distro id's
+# and finally we can see if the combo exists in the distro_tree table
+- distros_per_arch:
+    sql: >
+        select arch.arch, distro.name, 
+        CASE WHEN EXISTS 
+        (SELECT  id
+         FROM distro_tree  
+         WHERE distro_tree.distro_id = distro.id and distro_tree.arch_id = arch.id)
+        THEN 1 
+        ELSE 0 
+        END as avail
+        from 
+        (
+         (select arch_id
+          from 
+          arch
+          inner join system_arch_map
+          on arch_id = id
+          group by arch)foo
+         cross join
+         (select distinct distro_id
+          from distro_tree
+          left join distro
+          on distro.id = distro_tree.distro_id
+         )bar
+        ) 
+        inner join arch 
+        on arch.id = arch_id
+        inner join distro 
+        on distro.id = distro_id
+    data-field: avail
