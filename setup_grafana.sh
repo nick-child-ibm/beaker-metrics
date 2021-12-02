@@ -21,7 +21,8 @@
 
 # USER TODO 
 BEAKER_SERVER_IP="192.168.120.104"
-SRC_DIR=$PWD'/'
+# SRC_DIR MUST NOT BE LOCATED IN /ROOT
+SRC_DIR='/home/test_zone'
 SERVER_USR="beaker_prometheus"
 BEAKER_DB_USR="sql_agent"
 BEAKER_DB_PSWD="SqLAgENNT"
@@ -38,6 +39,34 @@ function error_exit(  ) {
 	>&2 echo "Script failed at line $1"
 	exit 1
 }
+
+# a function to remove service name $1
+function destroy_service( ) {
+	systemctl stop $1
+	systemctl disable $1
+	rm /etc/systemd/system/${1}.service
+	systemctl daemon-reload
+	systemctl reset-failed
+}
+
+function uninstall( ) {
+	userdel $SERVER_USR
+	rm -rf ${SRC_DIR}/beaker-sre
+	rm -rf ${SRC_DIR}/prometheus
+	destroy_service prometheus
+	rm -rf ${SRC_DIR}/grafana
+	destroy_service grafana
+	rm -rf ${SRC_DIR}/beaker_metrics
+	docker rm --force sql_agent
+	rm -rf ${SRC_DIR}/prometheus-sql
+	destroy_service prometheus-sql
+}
+
+if $1 == "uninstall" ; then
+	uninstall
+	exit 0
+fi
+
 
 # cd into working directory, create if needed
 echo Working in $SRC_DIR
@@ -71,6 +100,7 @@ else
 fi
 ! tar -xf  ${PROM_TAR_BALL} && error_exit $LINENO
 PROM_DIR=${SRC_DIR}/prometheus/${PROM_TAR_BALL%.tar.gz}
+mkdir ${PROM_DIR}/data
 cd ..
 # copy config file from beaker-sre
 ! cp ./beaker-sre/prometheus/prometheus.yml ${PROM_DIR}/prometheus.yml && error_exit $LINENO
@@ -85,10 +115,11 @@ cd ..
 # start prometheus service
 ! cp beaker-sre/prometheus/prometheus.service /etc/systemd/system/prometheus.service && error_exit $LINENO
 ! systemctl enable prometheus.service && error_exit $LINENO
-! systemctl start prometheus.service && error_exit $LINEN
+! systemctl start prometheus.service && error_exit $LINENO
 
 # ensure prometheus is running properly
 ! systemctl status prometheus.service | grep "active (running)" && error_exit $LINENO
+sleep 5
 ! wget http://${BEAKER_SERVER_IP}:9090/targets -O /dev/null && error_exit $LINENO
 ! wget http://${BEAKER_SERVER_IP}:9090/metrics -O /dev/null && error_exit $LINENO
 
@@ -123,7 +154,7 @@ cd ..
 # ensure grafana is running properly
 ! systemctl status grafana.service | grep "active (running)" && error_exit $LINENO
 # sometimes this fails if time is not given to get the service set up
-sleep 2
+sleep 5
 ! wget http://${BEAKER_SERVER_IP}:3000 -O /dev/null && error_exit $LINENO
 
 # USER TODO
